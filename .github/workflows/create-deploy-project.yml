@@ -9,11 +9,10 @@ jobs:
     steps:
       - name: Create project on deploy system
         run: |
-          set -e
-          RESP=$(curl -sS --max-time 60 -X POST https://deploy.codex55.lol/api/projects \
+          set +e
+          RESP=$(curl -sS --max-time 60 -w '\nHTTP_CODE=%{http_code}' -X POST https://deploy.codex55.lol/api/projects \
             -H 'Content-Type: application/json' \
             --data '{"repoUrl":"https://github.com/gateszhangc/diff-check","domain":"diff.codex55.lol","dnsProvider":"dynadot","branch":"main","database":{"enabled":false},"env":""}')
-          echo "RESPONSE: $RESP"
-          echo "$RESP" > response.json
-      - name: Show response
-        run: cat response.json
+          echo "$RESP" | head -c 3000 >> "$GITHUB_STEP_SUMMARY"
+          SAFE=$(echo "$RESP" | head -c 1000 | tr '\n' ' ')
+          echo "::notice::RESPONSE: $SAFE"
