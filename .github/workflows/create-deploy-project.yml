@@ -1,0 +1,19 @@
+name: Create deploy project (one-off)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create project on deploy system
+        run: |
+          set -e
+          RESP=$(curl -sS --max-time 60 -X POST https://deploy.codex55.lol/api/projects \
+            -H 'Content-Type: application/json' \
+            --data '{"repoUrl":"https://github.com/gateszhangc/diff-check","domain":"diff.codex55.lol","dnsProvider":"dynadot","branch":"main","database":{"enabled":false},"env":""}')
+          echo "RESPONSE: $RESP"
+          echo "$RESP" > response.json
+      - name: Show response
+        run: cat response.json
