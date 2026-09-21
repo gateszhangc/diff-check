@@ -7,9 +7,13 @@ sitediff.py — 网站版本快照与 SEO 对比工具（零第三方依赖）
   python3 sitediff.py snapshot <URL> [--max-pages N] [--no-screenshot] [--commit]
   python3 sitediff.py compare v1 v2 [--output FILE]
   python3 sitediff.py compare --auto
+
+compare 会同时输出 Markdown 与自包含 HTML 报告（内嵌样式与 base64 截图，
+可直接部署到 GitHub Pages / Netlify 等静态托管），并自动重建 reports/index.html。
 """
 
 import argparse
+import base64
 import difflib
 import hashlib
 import json
@@ -24,6 +28,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from html import unescape
+from html import escape as html_escape
 from html.parser import HTMLParser
 
 TOOL_VERSION = "1.0"
@@ -736,6 +741,305 @@ RECOMMENDATIONS = {
 }
 
 
+def build_recommendations(all_issues):
+    """从问题列表生成去重后的修复建议（Markdown 与 HTML 共用）"""
+    recs = []
+    seen_cats = set()
+    seen_recs = set()
+    for _, lv, cat, _ in sorted(all_issues, key=lambda x: (LEVEL_ORDER.get(x[1], 9), x[2])):
+        if (lv in (HIGH, MED) and cat in RECOMMENDATIONS and cat not in seen_cats
+                and RECOMMENDATIONS[cat] not in seen_recs):
+            seen_cats.add(cat)
+            seen_recs.add(RECOMMENDATIONS[cat])
+            recs.append(RECOMMENDATIONS[cat])
+    return recs
+
+
+# ---------------------------------------------------------------------------
+# HTML 报告渲染（自包含单文件，可对外部署）
+# ---------------------------------------------------------------------------
+
+HTML_CSS = """
+:root{--c-high:#dc2626;--c-med:#d97706;--c-low:#16a34a;--c-info:#2563eb;
+--bg:#f6f7f9;--card:#fff;--text:#1f2937;--muted:#6b7280;--border:#e5e7eb}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
+"Hiragino Sans GB","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+.topbar{background:#111827;color:#fff;padding:26px 0}
+.topbar h1{margin:0;font-size:22px;font-weight:700}
+.ver{font-size:15px;color:#9ca3af;margin-top:4px;font-weight:600}
+.meta-card{background:var(--card);border:1px solid var(--border);border-radius:10px;
+padding:16px 20px;margin:20px 0;display:flex;flex-wrap:wrap;gap:28px}
+.meta-item .k{font-size:12px;color:var(--muted);margin-bottom:2px}
+.meta-item .v{font-size:14px;font-weight:600;word-break:break-all}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:20px 0}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center}
+.stat .num{font-size:30px;font-weight:700}
+.stat .lbl{font-size:13px;color:var(--muted)}
+.stat.high .num{color:var(--c-high)}.stat.med .num{color:var(--c-med)}
+.stat.low .num{color:var(--c-low)}.stat.info .num{color:var(--c-info)}
+h2.sec{font-size:18px;margin:34px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--border)}
+.page{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin:14px 0}
+.page h3{margin:0 0 10px;font-size:15px;word-break:break-all;color:#111827}
+ul.issues{list-style:none;margin:0;padding:0}
+ul.issues li{padding:7px 10px;border-radius:6px;margin:6px 0;background:#f9fafb;font-size:14px}
+.badge{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;
+padding:1px 10px;margin-right:8px;color:#fff;vertical-align:1px}
+.badge.high{background:var(--c-high)}.badge.med{background:var(--c-med)}
+.badge.low{background:var(--c-low)}.badge.info{background:var(--c-info)}
+.ok{color:var(--c-low);font-size:14px;font-weight:600}
+details.diffwrap{margin:10px 0}
+details.diffwrap summary{cursor:pointer;font-size:14px;color:var(--c-info);font-weight:600;user-select:none}
+.diff-box{background:#0b1020;border-radius:8px;padding:12px;overflow-x:auto;
+font:12px/1.75 "SF Mono",Menlo,Consolas,monospace;margin-top:10px;white-space:pre}
+.diff-add{color:#86efac;background:rgba(34,197,94,.14);border-radius:3px;padding:0 6px;display:block}
+.diff-del{color:#fca5a5;background:rgba(239,68,68,.14);border-radius:3px;padding:0 6px;display:block}
+.diff-hunk{color:#93c5fd;display:block;padding:0 6px}
+.diff-ctx{color:#94a3b8;display:block;padding:0 6px}
+.shots{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+.shots figure{margin:0;background:#f3f4f6;border:1px solid var(--border);
+border-radius:8px;overflow:hidden;min-width:0}
+.shots figcaption{font-size:12px;color:var(--muted);padding:6px 10px;background:#fff;
+border-bottom:1px solid var(--border);font-weight:600}
+.shots img{display:block;width:100%;height:auto}
+.shot-note{font-size:13px;color:var(--muted)}
+ol.recs{padding-left:22px}
+ol.recs li{margin:8px 0;font-size:14px}
+.rec-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 20px}
+footer{margin:44px 0 30px;text-align:center;color:var(--muted);font-size:12px}
+a{color:var(--c-info);text-decoration:none}a:hover{text-decoration:underline}
+.report-card{display:block;background:var(--card);border:1px solid var(--border);
+border-radius:10px;padding:18px 22px;margin:14px 0;transition:box-shadow .15s}
+.report-card:hover{box-shadow:0 4px 14px rgba(0,0,0,.08);text-decoration:none}
+.report-card .t{font-size:17px;font-weight:700;color:var(--text)}
+.report-card .s{font-size:13px;color:var(--muted);margin-top:4px;word-break:break-all}
+.report-card .mini{font-size:13px;margin-top:8px}
+.empty{background:var(--card);border:1px dashed var(--border);border-radius:10px;
+padding:30px;text-align:center;color:var(--muted);font-size:14px;margin:20px 0}
+@media(max-width:700px){.shots{grid-template-columns:1fr}.meta-card{gap:16px}}
+"""
+
+META_RE = re.compile(
+    r'<script type="application/json" id="sitediff-meta">(.*?)</script>', re.S)
+
+
+def b64_file(path):
+    """读取文件为 data URI；失败返回 None"""
+    try:
+        with open(path, "rb") as f:
+            return "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
+    except Exception:
+        return None
+
+
+def render_diff_html(diff_text):
+    """把 unified diff 文本渲染为带颜色的 HTML 行"""
+    if not diff_text:
+        return ""
+    rows = []
+    for line in diff_text.splitlines():
+        e = html_escape(line)
+        if line.startswith(("+++", "---")):
+            cls = "diff-ctx"
+        elif line.startswith("+"):
+            cls = "diff-add"
+        elif line.startswith("-"):
+            cls = "diff-del"
+        elif line.startswith("@@"):
+            cls = "diff-hunk"
+        else:
+            cls = "diff-ctx"
+        rows.append('<span class="%s">%s</span>' % (cls, e if e else " "))
+    return "".join(rows)
+
+
+def json_for_script(obj):
+    """JSON 序列化并转义 <，防止嵌入 <script> 时被提前闭合"""
+    return json.dumps(obj, ensure_ascii=False).replace("<", "\\u003c")
+
+
+def render_html_report(va, vb, old, new, all_pages, page_details, all_issues,
+                       counts, shot_full, base_url):
+    """渲染自包含 HTML 对比报告"""
+    e = html_escape
+    created_a = old.get("created_at", "?")
+    created_b = new.get("created_at", "?")
+
+    # 按页面归组问题（保持页面顺序）
+    by_page = {}
+    for pg, lv, cat, msg in all_issues:
+        by_page.setdefault(pg, []).append((lv, msg))
+
+    h = []
+    h.append("<!DOCTYPE html>")
+    h.append('<html lang="zh-CN">')
+    h.append("<head>")
+    h.append('<meta charset="utf-8">')
+    h.append('<meta name="viewport" content="width=device-width, initial-scale=1">')
+    h.append("<title>%s</title>" % e("网站版本对比报告：%s → %s" % (va, vb)))
+    h.append('<script type="application/json" id="sitediff-meta">%s</script>' % json_for_script({
+        "va": va, "vb": vb, "base_url": base_url,
+        "created_at": created_b, "counts": counts, "pages": len(all_pages),
+    }))
+    h.append("<style>%s</style>" % HTML_CSS)
+    h.append("</head>")
+    h.append("<body>")
+    h.append('<header class="topbar"><div class="wrap">')
+    h.append("<h1>网站版本对比报告</h1>")
+    h.append('<div class="ver">%s → %s</div>' % (e(va), e(vb)))
+    h.append("</div></header>")
+    h.append('<main class="wrap">')
+
+    # 元信息
+    h.append('<section class="meta-card">')
+    h.append('<div class="meta-item"><div class="k">基线 URL</div><div class="v">%s</div></div>' % e(base_url))
+    h.append('<div class="meta-item"><div class="k">旧版抓取时间</div><div class="v">%s</div></div>' % e(created_a))
+    h.append('<div class="meta-item"><div class="k">新版抓取时间</div><div class="v">%s</div></div>' % e(created_b))
+    h.append('<div class="meta-item"><div class="k">对比页面数</div><div class="v">%d</div></div>' % len(all_pages))
+    h.append("</section>")
+
+    # 总览卡片
+    h.append('<section class="stats">')
+    for lv in (HIGH, MED, LOW, INFO):
+        h.append('<div class="stat %s"><div class="num">%d</div><div class="lbl">%s %s</div></div>'
+                 % (lv, counts[lv], EMOJI[lv], LEVEL_CN[lv]))
+    h.append("</section>")
+
+    # SEO 变化
+    h.append('<h2 class="sec">SEO 变化</h2>')
+    for pg in all_pages:
+        h.append('<section class="page">')
+        h.append("<h3>%s</h3>" % e(pg))
+        issues = by_page.get(pg)
+        if issues:
+            h.append('<ul class="issues">')
+            for lv, msg in issues:
+                h.append('<li><span class="badge %s">%s %s</span>%s</li>'
+                         % (lv, EMOJI[lv], LEVEL_CN[lv], e(msg)))
+            h.append("</ul>")
+        else:
+            h.append('<div class="ok">✅ 无变化</div>')
+        h.append("</section>")
+
+    # 网页内容变化
+    h.append('<h2 class="sec">网页内容变化</h2>')
+    any_diff = False
+    for pg in all_pages:
+        diff = (page_details.get(pg) or {}).get("diff")
+        if diff:
+            any_diff = True
+            h.append('<section class="page">')
+            h.append("<h3>%s</h3>" % e(pg))
+            h.append('<details class="diffwrap"><summary>查看文本 diff（前 120 行）</summary>')
+            h.append('<div class="diff-box">%s</div>' % render_diff_html(diff))
+            h.append("</details></section>")
+    if not any_diff:
+        h.append('<div class="empty">✅ 页面可见文本无实质变化</div>')
+
+    # 截图对比（base64 内嵌）
+    if shot_full:
+        h.append('<h2 class="sec">截图对比</h2>')
+        for pg, old_path, new_path in shot_full:
+            h.append('<section class="page">')
+            h.append("<h3>%s</h3>" % e(pg))
+            a_uri, b_uri = b64_file(old_path), b64_file(new_path)
+            if a_uri and b_uri:
+                h.append('<div class="shots">')
+                h.append('<figure><figcaption>旧版 %s</figcaption><img alt="旧版截图" src="%s"></figure>' % (e(va), a_uri))
+                h.append('<figure><figcaption>新版 %s</figcaption><img alt="新版截图" src="%s"></figure>' % (e(vb), b_uri))
+                h.append("</div>")
+            else:
+                h.append('<div class="shot-note">截图文件缺失，无法内嵌对比</div>')
+            h.append("</section>")
+
+    # 修复建议
+    recs = build_recommendations(all_issues)
+    if recs:
+        h.append('<h2 class="sec">修复建议（按优先级）</h2>')
+        h.append('<section class="rec-card"><ol class="recs">')
+        for r in recs:
+            h.append("<li>%s</li>" % e(r))
+        h.append("</ol></section>")
+
+    h.append('<footer>由 sitediff.py 生成 · %s</footer>' % e(datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")))
+    h.append("</main></body></html>")
+    return "\n".join(h)
+
+
+def rebuild_index(reports_dir):
+    """扫描报告目录，重建 index.html 报告列表页"""
+    if not os.path.isdir(reports_dir):
+        return None
+    entries = []
+    for name in sorted(os.listdir(reports_dir)):
+        if not name.endswith(".html") or name == "index.html":
+            continue
+        path = os.path.join(reports_dir, name)
+        meta = None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                head = f.read(8192)
+            m = META_RE.search(head)
+            if m:
+                meta = json.loads(m.group(1))
+        except Exception:
+            meta = None
+        if not meta:
+            fm = re.match(r"v(\d+)-v(\d+)\.html$", name)
+            if not fm:
+                continue
+            meta = {"va": "v" + fm.group(1), "vb": "v" + fm.group(2)}
+        entries.append({"file": name, "meta": meta})
+
+    def sort_key(entry):
+        mm = entry["meta"]
+        try:
+            return (int(str(mm.get("vb", "0")).lstrip("vV")),
+                    int(str(mm.get("va", "0")).lstrip("vV")))
+        except (TypeError, ValueError):
+            return (0, 0)
+
+    entries.sort(key=sort_key, reverse=True)
+
+    e = html_escape
+    h = []
+    h.append("<!DOCTYPE html>")
+    h.append('<html lang="zh-CN">')
+    h.append("<head>")
+    h.append('<meta charset="utf-8">')
+    h.append('<meta name="viewport" content="width=device-width, initial-scale=1">')
+    h.append("<title>网站版本对比报告中心</title>")
+    h.append("<style>%s</style>" % HTML_CSS)
+    h.append("</head>")
+    h.append("<body>")
+    h.append('<header class="topbar"><div class="wrap">')
+    h.append("<h1>网站版本对比报告中心</h1>")
+    h.append('<div class="ver">共 %d 份报告 · 由 sitediff.py 自动生成</div>' % len(entries))
+    h.append("</div></header>")
+    h.append('<main class="wrap">')
+    if not entries:
+        h.append('<div class="empty">还没有对比报告。运行 <code>python3 sitediff.py compare --auto</code> 生成第一份。</div>')
+    for entry in entries:
+        mm = entry["meta"]
+        va, vb = str(mm.get("va", "?")), str(mm.get("vb", "?"))
+        c = mm.get("counts") or {}
+        mini = "🔴 %s　🟡 %s　🟢 %s" % (c.get("high", "-"), c.get("medium", "-"), c.get("low", "-"))
+        h.append('<a class="report-card" href="%s">' % e(entry["file"]))
+        h.append('<div class="t">%s → %s</div>' % (e(va), e(vb)))
+        if mm.get("base_url"):
+            h.append('<div class="s">%s · %s</div>' % (e(mm["base_url"]), e(str(mm.get("created_at", "")))))
+        h.append('<div class="mini">%s</div>' % e(mini))
+        h.append("</a>")
+    h.append('<footer>由 sitediff.py 生成 · %s</footer>' % e(datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")))
+    h.append("</main></body></html>")
+
+    idx = os.path.join(reports_dir, "index.html")
+    with open(idx, "w", encoding="utf-8") as f:
+        f.write("\n".join(h))
+    return idx
+
+
 def cmd_compare(args):
     root = os.path.dirname(os.path.abspath(__file__))
     snap_root = os.path.abspath(args.snapshots_dir) if args.snapshots_dir else os.path.join(root, "snapshots")
@@ -856,15 +1160,7 @@ def cmd_compare(args):
             lines.append("")
 
     # 修复建议
-    recs = []
-    seen_cats = set()
-    seen_recs = set()
-    for _, lv, cat, _ in sorted(all_issues, key=lambda x: (LEVEL_ORDER.get(x[1], 9), x[2])):
-        if (lv in (HIGH, MED) and cat in RECOMMENDATIONS and cat not in seen_cats
-                and RECOMMENDATIONS[cat] not in seen_recs):
-            seen_cats.add(cat)
-            seen_recs.add(RECOMMENDATIONS[cat])
-            recs.append(RECOMMENDATIONS[cat])
+    recs = build_recommendations(all_issues)
     if recs:
         lines.append("## 修复建议（按优先级）")
         lines.append("")
@@ -879,9 +1175,37 @@ def cmd_compare(args):
     with open(out, "w", encoding="utf-8") as f:
         f.write(report)
 
+    # 自包含 HTML 报告（可对外部署）
+    html_path = None
+    index_path = None
+    if not args.no_html:
+        if args.output:
+            html_path = re.sub(r"\.md$", "", os.path.abspath(args.output)) + ".html"
+        else:
+            html_path = os.path.join(root, "reports", "%s-%s.html" % (va, vb))
+        os.makedirs(os.path.dirname(html_path), exist_ok=True)
+        shot_full = []
+        for pg in all_pages:
+            a, b = pages_a.get(pg), pages_b.get(pg)
+            if a and b and a.get("screenshot") and b.get("screenshot"):
+                shot_full.append((pg,
+                                  os.path.join(snap_root, va, a["screenshot"]),
+                                  os.path.join(snap_root, vb, b["screenshot"])))
+        base_url = new.get("base_url", old.get("base_url", "?"))
+        html_content = render_html_report(
+            va, vb, old, new, all_pages, page_details, all_issues,
+            counts, shot_full, base_url)
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        index_path = rebuild_index(os.path.dirname(html_path))
+
     print("对比完成: %s → %s" % (va, vb))
     print("🔴 %d  🟡 %d  🟢 %d  ℹ️ %d" % (counts[HIGH], counts[MED], counts[LOW], counts[INFO]))
     print("报告已写入: %s" % out)
+    if html_path:
+        print("HTML 报告: %s" % html_path)
+    if index_path:
+        print("报告列表页: %s" % index_path)
 
 
 # ---------------------------------------------------------------------------
@@ -906,6 +1230,7 @@ def main():
     cp.add_argument("--auto", action="store_true", help="自动对比最近两个版本")
     cp.add_argument("--output", help="报告输出路径（默认 reports/vA-vB.md）")
     cp.add_argument("--snapshots-dir", help="快照目录（默认 ./snapshots）")
+    cp.add_argument("--no-html", action="store_true", help="只生成 Markdown，跳过 HTML 报告")
     cp.set_defaults(func=cmd_compare)
 
     args = ap.parse_args()

@@ -16,8 +16,10 @@ python3 sitediff.py snapshot https://your-site.com/ --commit
 python3 sitediff.py compare --auto
 ```
 
-报告输出至 `reports/v1-v2.md`，含变化总览、SEO 变化（🔴高影响/🟡中/🟢低）、
-网页文本 diff、截图并排对比与修复建议。
+报告同时输出 Markdown（`reports/v1-v2.md`，供 git 内查阅）与**自包含 HTML**
+（`reports/v1-v2.html`，内嵌样式与 base64 截图，可直接发给他人），
+并自动重建 `reports/index.html` 报告列表首页。两者均含变化总览、
+SEO 变化（🔴高影响/🟡中/🟢低）、网页文本 diff、截图并排对比与修复建议。
 
 ## 常用参数
 
@@ -30,6 +32,20 @@ python3 sitediff.py compare --auto
 | snapshot | `--commit` | 快照后自动 git 提交并打标签 vN |
 | compare | `v1 v2` 或 `--auto` | 指定版本或自动取最近两版 |
 | compare | `--output FILE` | 报告输出路径 |
+| compare | `--no-html` | 只生成 Markdown，跳过 HTML 报告 |
+
+## 对外部署（公网访问）
+
+`reports/` 目录本身就是一个静态站点：`index.html` 是首页，自动列出所有
+对比报告（版本对、时间、严重度统计），点击进入单份报告。
+
+```bash
+# 生成报告后，把 reports/ 目录推到任意静态托管即可：
+# GitHub Pages：把 reports/ 内容推到 gh-pages 分支
+# Netlify / Vercel / Cloudflare Pages：直接拖拽上传 reports/ 目录
+```
+
+注意：报告会公开你监测的站点 URL 与页面截图，部署前请确认内容不敏感。
 
 ## 每次快照保存什么
 
@@ -42,6 +58,8 @@ snapshots/v1/
   sitemap.xml         # 如存在
   meta.json           # 抓取元信息（时间/状态/备注）
 reports/v1-v2.md      # 版本对比报告
+reports/v1-v2.html    # 自包含 HTML 报告（可对外分享/部署）
+reports/index.html    # 报告列表首页（静态站点入口）
 ```
 
 ## 检测维度
