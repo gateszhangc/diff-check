@@ -27,8 +27,9 @@ ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / "sitediff.py"
 REPORTS = ROOT / "reports"
 SNAPSHOTS = ROOT / "snapshots"
-HOST = "127.0.0.1"
-PORT = 8080
+# 本地默认只监听回环地址；容器里用 SITEDIFF_HOST=0.0.0.0 / SITEDIFF_PORT=3000 覆盖
+HOST = os.environ.get("SITEDIFF_HOST", "127.0.0.1")
+PORT = int(os.environ.get("SITEDIFF_PORT", "8080"))
 
 # 只允许同时跑一个扫描，避免两个任务争抢同一个 vN 版本号。
 JOB_LOCK = threading.Lock()
@@ -390,10 +391,27 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/reports":
             self.send_json(200, {"reports": report_items()})
             return
+        if path == "/robots.txt":
+            host = self.headers.get("Host", "")
+            body = "User-agent: *\nAllow: /\n"
+            if host:
+                body += "\nSitemap: https://%s/sitemap.xml\n" % host
+            self.send_bytes(200, body.encode("utf-8"), "text/plain; charset=utf-8")
+            return
+        if path == "/sitemap.xml":
+            host = self.headers.get("Host", "")
+            urls = ["/"] + [x["url"] for x in report_items()]
+            body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+                    + "".join("  <url><loc>https://%s%s</loc></url>\n" % (host, u) for u in urls)
+                    + "</urlset>\n")
+            self.send_bytes(200, body.encode("utf-8"), "application/xml; charset=utf-8")
+            return
 
-        target = (ROOT / path.lstrip("/")).resolve()
+        # 只对外暴露 reports/ 目录，避免泄露源码与快照
+        target = (REPORTS / path.lstrip("/")).resolve()
         try:
-            target.relative_to(ROOT)
+            target.relative_to(REPORTS.resolve())
         except ValueError:
             self.send_json(403, {"error": "禁止访问"})
             return

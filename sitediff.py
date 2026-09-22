@@ -313,13 +313,14 @@ def take_screenshot(url, out_path, timeout=60):
     chrome = find_chrome()
     if not chrome:
         return False, "未找到 Chrome/Chromium"
+    flags = ["--headless", "--disable-gpu", "--no-first-run", "--hide-scrollbars",
+             "--window-size=1280,2400", "--disable-dev-shm-usage"]
+    # 容器里通常以 root 运行，Chromium 需要显式关闭沙箱
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        flags.append("--no-sandbox")
+    flags += ["--screenshot=" + out_path, "--virtual-time-budget=6000", url]
     try:
-        subprocess.run(
-            [chrome, "--headless", "--disable-gpu", "--no-first-run",
-             "--hide-scrollbars", "--window-size=1280,2400",
-             "--screenshot=" + out_path, "--virtual-time-budget=6000", url],
-            timeout=timeout, capture_output=True,
-        )
+        subprocess.run([chrome] + flags, timeout=timeout, capture_output=True)
     except Exception as e:
         return False, str(e)
     ok = os.path.exists(out_path) and os.path.getsize(out_path) > 1000
@@ -515,8 +516,10 @@ def cmd_snapshot(args):
             ok, err = take_screenshot(u, shot)
             if ok:
                 entry["screenshot"] = "screenshots/%s.png" % slug
+                print("  📸 截图已保存: screenshots/%s.png" % slug)
             else:
                 meta_doc["notes"].append("%s 截图失败: %s" % (n, err))
+                print("  ✗ 截图失败: %s" % err)
 
         seo_doc["pages"][n] = entry
         meta_doc["pages"].append(n)

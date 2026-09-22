@@ -48,16 +48,18 @@ SEO 变化（🔴高影响/🟡中/🟢低）、网页文本 diff、截图并排
 
 ## 对外部署（公网访问）
 
-`reports/` 目录本身就是一个静态站点：`index.html` 是首页，自动列出所有
-对比报告（版本对、时间、严重度统计），点击进入单份报告。
+仓库自带 `Dockerfile`：镜像里跑的就是网页控制台本身（Python + Chromium），
+监听 3000 端口，界面与本地开发环境完全一致——输入 URL、选页数、勾截图即可扫描，
+下方「报告中心」列出 `reports/` 里的对比报告。
 
 ```bash
-# 生成报告后，把 reports/ 目录推到任意静态托管即可：
-# GitHub Pages：把 reports/ 内容推到 gh-pages 分支
-# Netlify / Vercel / Cloudflare Pages：直接拖拽上传 reports/ 目录
+# 本地自测（可选，需要本机安装 Docker）
+docker build -t sitediff-console .
+docker run --rm -p 3000:3000 sitediff-console
 ```
 
-注意：报告会公开你监测的站点 URL 与页面截图，部署前请确认内容不敏感。
+部署平台（deploy.codex55.lol）直接读取该 `Dockerfile` 构建并发布。注意：快照与报告写在容器内
+（`/app/snapshots`、`/app/reports`），重新部署会清空；控制台对外无鉴权，拿到地址的人都能发起扫描。
 
 ## 每次快照保存什么
 
