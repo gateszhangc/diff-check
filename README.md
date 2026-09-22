@@ -5,6 +5,18 @@
 
 ## 快速开始
 
+### 方式一：网页控制台
+
+```bash
+python3 webapp.py
+```
+
+打开 <http://127.0.0.1:8080/>，在输入框填写网站 URL 后点击「开始扫描」。
+第一次扫描会建立基线；网站修改后再次扫描同一网站，会自动生成并展示版本对比报告。
+「最多页面」留空表示不限制，会抓取 sitemap 中的**全部页面**（大站建议填一个上限）。
+
+### 方式二：命令行
+
 ```bash
 # 1. 首次：为当前线上版本建立基线（自动编号 v1，git 提交并打标签）
 python3 sitediff.py snapshot https://your-site.com/ --commit
@@ -25,7 +37,7 @@ SEO 变化（🔴高影响/🟡中/🟢低）、网页文本 diff、截图并排
 
 | 命令 | 参数 | 说明 |
 |---|---|---|
-| snapshot | `--max-pages N` | 最多抓取页面数（默认 10，含 sitemap 抽样） |
+| snapshot | `--max-pages N` | 最多抓取页面数（默认不限制，抓取 sitemap 中的全部页面） |
 | snapshot | `--pages /about /pricing` | 额外指定重点页面 |
 | snapshot | `--no-sitemap` | 不从 sitemap 抽样 |
 | snapshot | `--no-screenshot` | 跳过截图 |

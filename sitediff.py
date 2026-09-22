@@ -248,8 +248,8 @@ def parse_sitemap(xml_text, max_urls=500):
     return urls
 
 
-def sample_sitemap_pages(base, robots_text, max_pages):
-    """从 robots.txt 的 Sitemap 声明与 /sitemap.xml 抽样页面"""
+def sample_sitemap_pages(base, robots_text, max_pages=None):
+    """从 robots.txt 的 Sitemap 声明与 /sitemap.xml 抽取页面；max_pages 为 None 表示不限制"""
     sitemap_urls = []
     if robots_text:
         for line in robots_text.splitlines():
@@ -261,17 +261,19 @@ def sample_sitemap_pages(base, robots_text, max_pages):
         sitemap_urls.insert(0, default_sm)
 
     candidates = []
+    # 不限制页数时放宽单个 sitemap 的解析上限（sitemap index 只递归前 3 个子文件）
+    cap = 5000 if max_pages is None else max(200, max_pages * 5)
     for sm in sitemap_urls[:3]:
         text, status, _, _ = fetch(sm, timeout=15)
         if text is None or status != 200:
             continue
-        found = parse_sitemap(text)
+        found = parse_sitemap(text, max_urls=cap)
         # sitemap index：递归一层
         if found and all(re.search(r"sitemap", urllib.parse.urlsplit(f).path, re.I) for f in found[:5]):
             for sub in found[:3]:
                 t2, s2, _, _ = fetch(sub, timeout=15)
                 if t2 and s2 == 200:
-                    candidates.extend(parse_sitemap(t2))
+                    candidates.extend(parse_sitemap(t2, max_urls=cap))
         else:
             candidates.extend(found)
 
@@ -291,6 +293,8 @@ def sample_sitemap_pages(base, robots_text, max_pages):
         seen.add(n)
         pages.append((len(path.strip("/").split("/")), len(path), n))
     pages.sort()
+    if max_pages is None:
+        return [u for _, _, u in pages]
     return [u for _, _, u in pages[: max(0, max_pages)]]
 
 
@@ -465,14 +469,14 @@ def cmd_snapshot(args):
             seen.add(n)
             page_urls.append(full)
     if not args.no_sitemap:
-        budget = args.max_pages - len(page_urls)
-        if budget > 0:
-            for u in sample_sitemap_pages(base, robots_text, budget):
-                n = norm_url(u)
-                if n not in seen:
-                    seen.add(n)
-                    page_urls.append(u)
-    page_urls = page_urls[: args.max_pages]
+        # 候选页按 --max-pages 取样，去重后再统一截断，保证「最多 N 页」真的抓满 N 页
+        for u in sample_sitemap_pages(base, robots_text, args.max_pages):
+            n = norm_url(u)
+            if n not in seen:
+                seen.add(n)
+                page_urls.append(u)
+    if args.max_pages is not None:
+        page_urls = page_urls[: args.max_pages]
 
     seo_doc = {
         "base_url": base,
@@ -1217,7 +1221,8 @@ def main():
     sp = sub.add_parser("snapshot", help="抓取网站并保存为新版本快照")
     sp.add_argument("url", help="网站 URL（首页）")
     sp.add_argument("--pages", nargs="*", help="额外指定页面路径或完整 URL")
-    sp.add_argument("--max-pages", type=int, default=10, help="最多抓取页面数（默认 10）")
+    sp.add_argument("--max-pages", type=int, default=None,
+                    help="最多抓取页面数（默认不限制，抓取 sitemap 中的全部页面）")
     sp.add_argument("--no-sitemap", action="store_true", help="不从 sitemap 抽样额外页面")
     sp.add_argument("--no-screenshot", action="store_true", help="跳过截图")
     sp.add_argument("--commit", action="store_true", help="快照后自动 git 提交并打标签")
